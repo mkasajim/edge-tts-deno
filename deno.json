@@ -1,0 +1,8 @@
+{
+  "deploy": {
+    "project": "edge-tts-api",
+    "exclude": ["node_modules", "*.md", "test*", "*.sh"],
+    "include": ["main.ts"],
+    "entrypoint": "main.ts"
+  }
+}
