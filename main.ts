@@ -121,12 +121,15 @@ async function handleTTSRequest(
     const connectId = generateConnectId();
     const audioData: Uint8Array[] = [];
     
-    // Create WebSocket connection with proper URL and headers
-    const wsUrl = new URL(WSS_URL);
-    const ws = new WebSocket(wsUrl.toString());
+    // Create WebSocket connection with proper URL
+    const wsUrl = `${WSS_URL}&ConnectionId=${connectId}`;
+    console.log('Connecting to WebSocket:', wsUrl);
+    
+    const ws = new WebSocket(wsUrl);
     
     // Set up timeout
     const timeout = setTimeout(() => {
+      console.log('WebSocket timeout reached');
       ws.close();
       reject(new Error('TTS request timed out'));
     }, 30000);
@@ -134,17 +137,20 @@ async function handleTTSRequest(
     ws.onopen = () => {
       console.log('WebSocket connected successfully');
       
-      // Send configuration message
+      // Send configuration message (exact format from edge-tts)
       const configMessage = `X-Timestamp:${dateToString()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`;
       console.log('Sending config message');
       ws.send(configMessage);
       
-      // Send SSML message
-      const ssml = createSSML(text, voice, rate, volume, pitch);
-      console.log('Generated SSML:', ssml.substring(0, 200) + (ssml.length > 200 ? '...' : ''));
-      const ssmlMessage = `X-RequestId:${connectId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateToString()}\r\nPath:ssml\r\n\r\n${ssml}`;
-      console.log('Sending SSML message');
-      ws.send(ssmlMessage);
+      // Wait a moment before sending SSML
+      setTimeout(() => {
+        // Send SSML message
+        const ssml = createSSML(text, voice, rate, volume, pitch);
+        console.log('Generated SSML:', ssml.substring(0, 200) + (ssml.length > 200 ? '...' : ''));
+        const ssmlMessage = `X-RequestId:${connectId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateToString()}\r\nPath:ssml\r\n\r\n${ssml}`;
+        console.log('Sending SSML message, length:', ssmlMessage.length);
+        ws.send(ssmlMessage);
+      }, 100);
     };
     
     ws.onmessage = (event) => {
@@ -198,12 +204,17 @@ async function handleTTSRequest(
     ws.onerror = (error) => {
       clearTimeout(timeout);
       console.error('WebSocket error:', error);
-      reject(new Error('WebSocket connection failed'));
+      reject(new Error(`WebSocket connection failed: ${error}`));
     };
     
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       clearTimeout(timeout);
-      console.log('WebSocket closed');
+      console.log(`WebSocket closed: code=${event.code}, reason=${event.reason}, wasClean=${event.wasClean}`);
+      
+      // If we haven't resolved yet and the connection closed unexpectedly
+      if (audioData.length === 0 && event.code !== 1000) {
+        reject(new Error(`WebSocket closed unexpectedly: ${event.reason || 'Unknown reason'}`));
+      }
     };
   });
 }
@@ -393,6 +404,45 @@ async function handler(request: Request): Promise<Response> {
         ...corsHeaders 
       }
     });
+  }
+}
+
+/**
+ * Alternative HTTP-based TTS implementation using Azure Cognitive Services endpoint
+ */
+async function handleTTSRequestHTTP(
+  text: string,
+  voice: string,
+  rate: string,
+  volume: string,
+  pitch: string
+): Promise<Uint8Array> {
+  // Try using Azure's Speech Services API as an alternative
+  const ssml = createSSML(text, voice, rate, volume, pitch);
+  
+  // Use a direct approach with Azure's endpoint
+  const endpoint = 'https://eastus.tts.speech.microsoft.com/cognitiveservices/v1';
+  
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/ssml+xml',
+        'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
+        'User-Agent': 'edge-tts-deno/1.0',
+      },
+      body: ssml
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP TTS failed: ${response.status}`);
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
+  } catch (error) {
+    console.error('HTTP TTS fallback failed:', error);
+    throw error;
   }
 }
 
