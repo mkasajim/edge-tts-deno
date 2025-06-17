@@ -4,7 +4,7 @@
 # Usage: ./test-api.sh [BASE_URL]
 # Example: ./test-api.sh https://your-project.deno.dev
 
-BASE_URL=${1:-"http://localhost:8000"}
+BASE_URL=${1:-"https://mksajim-edge-tts-de-77.deno.dev"}
 
 echo "🧪 Testing Edge TTS API on Deno Deploy"
 echo "📍 Base URL: $BASE_URL"
@@ -31,10 +31,32 @@ test_endpoint() {
     if [ "$method" = "GET" ]; then
         response=$(curl -s -w "\n%{http_code}" "$BASE_URL$endpoint")
     else
-        response=$(curl -s -w "\n%{http_code}" -X "$method" \
-            -H "Content-Type: application/json" \
-            -d "$data" \
-            "$BASE_URL$endpoint")
+        if [ "$endpoint" = "/tts" ]; then
+            # For TTS endpoint, save binary response separately
+            curl -s -X "$method" \
+                -H "Content-Type: application/json" \
+                -d "$data" \
+                -w "\n%{http_code}" \
+                -o "temp_response.bin" \
+                "$BASE_URL$endpoint" > temp_status.txt
+            http_code=$(cat temp_status.txt | tail -n1)
+            
+            # Check if response is binary (successful) or text (error)
+            if [ "$http_code" = "200" ]; then
+                cp temp_response.bin test_output.mp3
+                body="[Binary audio data saved to test_output.mp3]"
+            else
+                body=$(cat temp_response.bin)
+            fi
+            
+            rm -f temp_response.bin temp_status.txt
+            response="$body"$'\n'"$http_code"
+        else
+            response=$(curl -s -w "\n%{http_code}" -X "$method" \
+                -H "Content-Type: application/json" \
+                -d "$data" \
+                "$BASE_URL$endpoint")
+        fi
     fi
     
     http_code=$(echo "$response" | tail -n1)
@@ -46,11 +68,12 @@ test_endpoint() {
             # Count voices
             voice_count=$(echo "$body" | grep -o '"Name"' | wc -l)
             echo -e "   📢 Found $voice_count voices"
-        elif [ "$endpoint" = "/tts" ] && [ "$method" = "POST" ]; then
-            # Save audio file for testing
-            echo "$body" > test_output.mp3
-            file_size=$(wc -c < test_output.mp3)
-            echo -e "   🎵 Audio file size: $file_size bytes"
+        elif [ "$endpoint" = "/tts" ] && [ "$method" = "POST" ] && [ "$http_code" = "200" ]; then
+            # Audio file was saved during curl request
+            if [ -f "test_output.mp3" ]; then
+                file_size=$(wc -c < test_output.mp3)
+                echo -e "   🎵 Audio file size: $file_size bytes"
+            fi
         fi
     else
         echo -e "${RED}❌ FAIL${NC} (Expected HTTP $expected_status, got HTTP $http_code)"

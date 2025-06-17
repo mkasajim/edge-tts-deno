@@ -132,22 +132,25 @@ async function handleTTSRequest(
     }, 30000);
     
     ws.onopen = () => {
-      console.log('WebSocket connected');
+      console.log('WebSocket connected successfully');
       
       // Send configuration message
       const configMessage = `X-Timestamp:${dateToString()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`;
+      console.log('Sending config message');
       ws.send(configMessage);
       
       // Send SSML message
       const ssml = createSSML(text, voice, rate, volume, pitch);
+      console.log('Generated SSML:', ssml.substring(0, 200) + (ssml.length > 200 ? '...' : ''));
       const ssmlMessage = `X-RequestId:${connectId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateToString()}\r\nPath:ssml\r\n\r\n${ssml}`;
+      console.log('Sending SSML message');
       ws.send(ssmlMessage);
     };
     
     ws.onmessage = (event) => {
       if (typeof event.data === 'string') {
         // Text message (metadata)
-        console.log('Received text message:', event.data);
+        console.log('Received text message:', event.data.substring(0, 100) + (event.data.length > 100 ? '...' : ''));
         
         if (event.data.includes('Path:turn.end')) {
           // End of stream
@@ -156,6 +159,13 @@ async function handleTTSRequest(
           
           // Combine all audio data
           const totalLength = audioData.reduce((sum, chunk) => sum + chunk.length, 0);
+          console.log(`Combining ${audioData.length} audio chunks, total length: ${totalLength} bytes`);
+          
+          if (totalLength === 0) {
+            reject(new Error('No audio data received from TTS service'));
+            return;
+          }
+          
           const combined = new Uint8Array(totalLength);
           let offset = 0;
           
@@ -170,12 +180,17 @@ async function handleTTSRequest(
         // Binary message (audio data)
         const arrayBuffer = event.data as ArrayBuffer;
         const uint8Array = new Uint8Array(arrayBuffer);
+        console.log(`Received binary message: ${uint8Array.length} bytes`);
         
         // Skip the header and get audio data
         const headerEndIndex = findHeaderEnd(uint8Array);
         if (headerEndIndex !== -1) {
           const audioChunk = uint8Array.slice(headerEndIndex);
+          console.log(`Extracted audio chunk: ${audioChunk.length} bytes (after ${headerEndIndex} byte header)`);
           audioData.push(audioChunk);
+        } else {
+          console.log('No header separator found, treating entire message as audio data');
+          audioData.push(uint8Array);
         }
       }
     };
@@ -319,7 +334,7 @@ async function handler(request: Request): Promise<Response> {
       }
       
       // Validate text length (max ~8000 characters for single request)
-      if (text.length > 8000) {
+      if (typeof text === 'string' && text.length > 8000) {
         return new Response(JSON.stringify({ error: 'Text too long. Maximum 8000 characters.' }), {
           status: 400,
           headers: { 
@@ -330,8 +345,10 @@ async function handler(request: Request): Promise<Response> {
       }
       
       try {
+        console.log(`Starting TTS generation for text: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}" with voice: ${voice}`);
         const audioData = await handleTTSRequest(text, voice, rate, volume, pitch);
         
+        console.log(`TTS generation completed. Audio size: ${audioData.length} bytes`);
         return new Response(audioData, {
           headers: {
             'Content-Type': 'audio/mpeg',
